@@ -1,0 +1,36 @@
+# Systems
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+env/
+venv/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+env/
+venv/
+.env
+.env*
+*.env
+*.env.*
+
+
+# Database
+chroma_db/
+*.sqlite3
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+dist/
+.npm/
+
+# App Specific
+uploads/
+outputs/
