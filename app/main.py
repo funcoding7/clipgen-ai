@@ -52,6 +52,10 @@ class ClipResponse(BaseModel):
     download_url: Optional[str] = None
     shorts_s3_key: Optional[str] = None
     shorts_download_url: Optional[str] = None
+    virality_score: Optional[int] = None
+    hook_type: Optional[str] = None
+    layout_type: Optional[str] = None
+    has_transcript: bool = False
 
     class Config:
         from_attributes = True
@@ -201,7 +205,11 @@ async def list_user_videos(
                     start_time=c.start_time,
                     end_time=c.end_time,
                     s3_key=c.s3_key,
-                    download_url=get_presigned_url(c.s3_key) if c.s3_key else None
+                    download_url=get_presigned_url(c.s3_key) if c.s3_key else None,
+                    virality_score=c.virality_score,
+                    hook_type=c.hook_type,
+                    layout_type=c.layout_type,
+                    has_transcript=c.transcript_json is not None
                 ) for c in v.clips
             ]
         )
@@ -240,7 +248,11 @@ async def get_video(
                 start_time=c.start_time,
                 end_time=c.end_time,
                 s3_key=c.s3_key,
-                download_url=get_presigned_url(c.s3_key) if c.s3_key else None
+                download_url=get_presigned_url(c.s3_key) if c.s3_key else None,
+                virality_score=c.virality_score,
+                hook_type=c.hook_type,
+                layout_type=c.layout_type,
+                has_transcript=c.transcript_json is not None
             ) for c in video.clips
         ]
     )
@@ -273,13 +285,20 @@ async def get_clip_download_url(
     return {"download_url": url, "filename": clip.filename}
 
 
+class ConvertShortsRequest(BaseModel):
+    layout_type: str = "center_crop"  # center_crop, blurred, smart
+    enable_captions: bool = False
+    caption_style: str = "default"  # default, hormozi, capcut, minimal
+
+
 @app.post("/clips/{clip_id}/convert-shorts")
 async def convert_clip_to_shorts(
     clip_id: str,
+    request: ConvertShortsRequest = ConvertShortsRequest(),
     user_id: str = Depends(get_user_id),
     db: Session = Depends(get_db)
 ):
-    """Trigger conversion of a clip to 9:16 shorts format"""
+    """Trigger conversion of a clip to 9:16 shorts format with layout options"""
     clip = db.query(Clip).filter(Clip.id == uuid.UUID(clip_id)).first()
     
     if not clip:
@@ -290,21 +309,29 @@ async def convert_clip_to_shorts(
     if not video:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Check if already converted
-    if clip.shorts_s3_key:
+    # Check if already converted with same layout
+    if clip.shorts_s3_key and clip.layout_type == request.layout_type:
         url = get_presigned_url(clip.shorts_s3_key)
         return {
             "status": "already_converted",
             "shorts_download_url": url,
-            "message": "This clip has already been converted to shorts format"
+            "layout_type": clip.layout_type,
+            "message": "This clip has already been converted with this layout"
         }
     
-    # Trigger async conversion task
-    task = convert_clip_to_shorts_task.delay(clip_id, user_id)
+    # Trigger async conversion task with layout options
+    task = convert_clip_to_shorts_task.delay(
+        clip_id, 
+        user_id, 
+        request.layout_type,
+        request.enable_captions,
+        request.caption_style
+    )
     
     return {
         "status": "processing",
         "task_id": task.id,
+        "layout_type": request.layout_type,
         "message": "Conversion to shorts format started"
     }
 

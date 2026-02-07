@@ -38,6 +38,39 @@ def get_db_session():
     return SessionLocal()
 
 
+def extract_clip_transcript(segments: list, start_time: float, end_time: float) -> list:
+    """
+    Extract transcript segments that fall within a clip's time range.
+    Adjusts timestamps to be relative to the clip start.
+    
+    Args:
+        segments: Full video transcript segments from Whisper
+        start_time: Clip start time in seconds
+        end_time: Clip end time in seconds
+    
+    Returns:
+        List of segments with adjusted timestamps for the clip
+    """
+    clip_segments = []
+    
+    for seg in segments:
+        seg_start = seg.get('start', 0)
+        seg_end = seg.get('end', 0)
+        
+        # Check if segment overlaps with clip time range
+        if seg_end > start_time and seg_start < end_time:
+            # Adjust timestamps to be relative to clip start
+            adjusted_start = max(0, seg_start - start_time)
+            adjusted_end = min(end_time - start_time, seg_end - start_time)
+            
+            clip_segments.append({
+                'start': round(adjusted_start, 3),
+                'end': round(adjusted_end, 3),
+                'text': seg.get('text', '').strip()
+            })
+    
+    return clip_segments
+
 @celery_app.task(name="process_video")
 def process_video_task(s3_key: str, video_id: str, user_id: str):
     """
@@ -90,6 +123,13 @@ def process_video_task(s3_key: str, video_id: str, user_id: str):
             # Create the clip locally
             create_video_clip(input_path, local_clip_path, clip['start'], clip['end'])
             
+            # Extract transcript segments for this clip's time range
+            clip_transcript = extract_clip_transcript(
+                result["segments"], 
+                clip['start'], 
+                clip['end']
+            )
+            
             # Upload clip to S3
             clip_s3_key = f"clips/{user_id}/{video_id}/{clip_filename}"
             upload_success = upload_file(local_clip_path, clip_s3_key)
@@ -98,20 +138,26 @@ def process_video_task(s3_key: str, video_id: str, user_id: str):
                 print(f"Warning: Failed to upload clip {clip_filename} to S3")
                 continue
             
-            # Save clip to database with S3 key
+            # Save clip to database with S3 key, virality metadata, and transcript
+            import json
             db_clip = Clip(
                 video_id=video_id,
                 filename=clip_filename,
                 s3_key=clip_s3_key,
                 reason=clip.get('reason', ''),
                 start_time=clip['start'],
-                end_time=clip['end']
+                end_time=clip['end'],
+                virality_score=clip.get('virality_score'),
+                hook_type=clip.get('hook_type'),
+                transcript_json=json.dumps(clip_transcript) if clip_transcript else None
             )
             db.add(db_clip)
             created_clips.append({
                 "file": clip_filename,
                 "s3_key": clip_s3_key,
-                "reason": clip.get('reason', '')
+                "reason": clip.get('reason', ''),
+                "virality_score": clip.get('virality_score'),
+                "hook_type": clip.get('hook_type')
             })
         
         # 7. Update video status to completed
@@ -193,15 +239,19 @@ def process_youtube_task(url: str, video_id: str, user_id: str):
 
 
 @celery_app.task(name="convert_to_shorts")
-def convert_clip_to_shorts_task(clip_id: str, user_id: str):
+def convert_clip_to_shorts_task(clip_id: str, user_id: str, layout_type: str = "center_crop",
+                                  enable_captions: bool = False, caption_style: str = "default"):
     """
     Convert a clip to 9:16 shorts format (Instagram Reels / YouTube Shorts).
     
     Args:
         clip_id: UUID of the clip record
         user_id: User ID for organizing files in S3
+        layout_type: One of "center_crop", "blurred", "smart"
+        enable_captions: Whether to burn in captions
+        caption_style: Style preset for captions
     """
-    from .utils import convert_to_shorts
+    from .utils import convert_to_shorts_with_layout
     
     db = get_db_session()
     temp_dir = tempfile.mkdtemp()
@@ -217,24 +267,40 @@ def convert_clip_to_shorts_task(clip_id: str, user_id: str):
         if not download_file(clip.s3_key, local_input):
             return {"status": "Failed", "error": "Could not download clip from S3"}
         
-        # Convert to shorts format
-        shorts_filename = f"shorts_{clip.filename}"
+        # Generate captions file if enabled
+        captions_file = None
+        if enable_captions and clip.transcript_json:
+            import json
+            captions_file = os.path.join(temp_dir, "captions.srt")
+            transcript_data = json.loads(clip.transcript_json)
+            generate_srt_file(transcript_data, captions_file)
+        
+        # Convert to shorts format with layout and captions
+        shorts_filename = f"shorts_{layout_type}_{clip.filename}"
         local_output = os.path.join(temp_dir, shorts_filename)
-        convert_to_shorts(local_input, local_output)
+        convert_to_shorts_with_layout(
+            local_input, 
+            local_output, 
+            layout_type=layout_type,
+            captions_file=captions_file,
+            caption_style=caption_style
+        )
         
         # Upload shorts version to S3
         shorts_s3_key = f"shorts/{user_id}/{clip.video_id}/{shorts_filename}"
         if not upload_file(local_output, shorts_s3_key):
             return {"status": "Failed", "error": "Could not upload shorts to S3"}
         
-        # Update clip with shorts s3 key
+        # Update clip with shorts s3 key and layout type
         clip.shorts_s3_key = shorts_s3_key
+        clip.layout_type = layout_type
         db.commit()
         
         return {
             "status": "Complete",
             "shorts_s3_key": shorts_s3_key,
-            "filename": shorts_filename
+            "filename": shorts_filename,
+            "layout_type": layout_type
         }
     
     except Exception as e:
@@ -247,3 +313,25 @@ def convert_clip_to_shorts_task(clip_id: str, user_id: str):
         import shutil
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
+
+
+def generate_srt_file(transcript_data: list, output_path: str):
+    """
+    Generate an SRT subtitle file from transcript data.
+    
+    Args:
+        transcript_data: List of dicts with 'start', 'end', 'text' keys
+        output_path: Path to write the SRT file
+    """
+    def format_timestamp(seconds):
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:06.3f}".replace('.', ',')
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for i, segment in enumerate(transcript_data, 1):
+            start = format_timestamp(segment['start'])
+            end = format_timestamp(segment['end'])
+            text = segment.get('text', '').strip()
+            f.write(f"{i}\n{start} --> {end}\n{text}\n\n")

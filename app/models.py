@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Enum as SQLEnum
+from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -41,6 +41,11 @@ class Clip(Base):
     reason = Column(String, nullable=True)
     start_time = Column(Float, nullable=True)
     end_time = Column(Float, nullable=True)
+    # New fields for enhanced clip metadata
+    virality_score = Column(Integer, nullable=True)  # 0-100 score
+    hook_type = Column(String, nullable=True)  # Category of viral hook
+    transcript_json = Column(String, nullable=True)  # JSON string of word-level timestamps for captions
+    layout_type = Column(String, nullable=True, default="center_crop")  # center_crop, blurred, smart
     created_at = Column(DateTime, default=datetime.utcnow)
     
     video = relationship("Video", back_populates="clips")
