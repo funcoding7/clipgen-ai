@@ -18,6 +18,10 @@ interface ClipData {
     reason: string | null;
     start_time: number | null;
     end_time: number | null;
+    virality_score: number | null;
+    hook_type: string | null;
+    layout_type: string | null;
+    has_transcript: boolean;
 }
 
 interface VideoData {
@@ -45,6 +49,10 @@ export default function Dashboard({
     const [isSearching, setIsSearching] = useState(false);
     const [convertingClips, setConvertingClips] = useState<Set<string>>(new Set());
     const [shortsUrls, setShortsUrls] = useState<Record<string, string>>({});
+    // Layout and caption options per clip
+    const [clipLayouts, setClipLayouts] = useState<Record<string, string>>({});
+    const [clipCaptions, setClipCaptions] = useState<Record<string, boolean>>({});
+    const [captionStyles, setCaptionStyles] = useState<Record<string, string>>({});
 
     // Poll task status
     useEffect(() => {
@@ -113,10 +121,19 @@ export default function Dashboard({
 
         setConvertingClips(prev => new Set(prev).add(clipId));
 
+        // Get layout and caption options for this clip
+        const layoutType = clipLayouts[clipId] || "center_crop";
+        const enableCaptions = clipCaptions[clipId] || false;
+        const captionStyle = captionStyles[clipId] || "default";
+
         try {
             const { data } = await axios.post(
                 `${API_Base}/clips/${clipId}/convert-shorts`,
-                {},
+                {
+                    layout_type: layoutType,
+                    enable_captions: enableCaptions,
+                    caption_style: captionStyle
+                },
                 { headers: { "X-User-ID": userId } }
             );
 
@@ -344,6 +361,68 @@ export default function Dashboard({
                                                     #{idx + 1}
                                                 </span>
                                             </div>
+
+                                            {/* Virality Score & Hook Type */}
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                                {clip.virality_score !== null && (
+                                                    <span className={`text-xs font-bold px-2 py-1 rounded-full ${clip.virality_score >= 80 ? 'bg-green-500/20 text-green-400' :
+                                                            clip.virality_score >= 60 ? 'bg-yellow-500/20 text-yellow-400' :
+                                                                clip.virality_score >= 40 ? 'bg-orange-500/20 text-orange-400' :
+                                                                    'bg-red-500/20 text-red-400'
+                                                        }`}>
+                                                        🔥 {clip.virality_score}%
+                                                    </span>
+                                                )}
+                                                {clip.hook_type && (
+                                                    <span className="text-xs bg-purple-500/20 text-purple-400 px-2 py-1 rounded-full">
+                                                        {clip.hook_type}
+                                                    </span>
+                                                )}
+                                            </div>
+
+                                            {/* Layout Selector */}
+                                            <div className="space-y-2">
+                                                <label className="text-xs text-slate-400 block">Layout Style</label>
+                                                <select
+                                                    value={clipLayouts[clip.id] || "center_crop"}
+                                                    onChange={(e) => setClipLayouts(prev => ({ ...prev, [clip.id]: e.target.value }))}
+                                                    className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                                                >
+                                                    <option value="center_crop">Center Crop</option>
+                                                    <option value="blurred">Blurred Background</option>
+                                                    <option value="smart">Smart Crop (Face Tracking)</option>
+                                                </select>
+                                            </div>
+
+                                            {/* Caption Options */}
+                                            {clip.has_transcript && (
+                                                <div className="space-y-2">
+                                                    <div className="flex items-center gap-2">
+                                                        <input
+                                                            type="checkbox"
+                                                            id={`captions-${clip.id}`}
+                                                            checked={clipCaptions[clip.id] || false}
+                                                            onChange={(e) => setClipCaptions(prev => ({ ...prev, [clip.id]: e.target.checked }))}
+                                                            className="w-4 h-4 rounded border-border bg-secondary text-primary focus:ring-primary"
+                                                        />
+                                                        <label htmlFor={`captions-${clip.id}`} className="text-xs text-slate-400">
+                                                            Burn-in Captions
+                                                        </label>
+                                                    </div>
+                                                    {clipCaptions[clip.id] && (
+                                                        <select
+                                                            value={captionStyles[clip.id] || "default"}
+                                                            onChange={(e) => setCaptionStyles(prev => ({ ...prev, [clip.id]: e.target.value }))}
+                                                            className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                                                        >
+                                                            <option value="default">Default (Clean)</option>
+                                                            <option value="hormozi">Hormozi (Bold Impact)</option>
+                                                            <option value="capcut">CapCut (Colorful)</option>
+                                                            <option value="minimal">Minimal</option>
+                                                        </select>
+                                                    )}
+                                                </div>
+                                            )}
 
                                             {/* Action Buttons */}
                                             <div className="pt-2 space-y-2">
